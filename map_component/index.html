@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { background: #fff; color: #212529; }
+    #map { height: 560px; }
+    #panel { padding: 10px 14px; background: #fff; }
+    .status { padding: 8px 12px; border-radius: 6px; margin: 8px 0; font-size: 14px; line-height: 1.4; }
+    .info    { background: #ebf5fb; color: #1a5276; border-left: 3px solid #2980b9; }
+    .success { background: #eafaf1; color: #1e8449; border-left: 3px solid #27ae60; }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 13px; background: #fff; }
+    th { background: #f0f2f4; padding: 6px 10px; text-align: left; border-bottom: 2px solid #dee2e6; font-weight: 600; color: #333; }
+    td { padding: 5px 10px; border-bottom: 1px solid #e9ecef; color: #212529; background: #fff; }
+    tr:hover td { background: #f8f9fa; }
+    .del-btn { background: none; border: none; color: #e74c3c; cursor: pointer; font-size: 16px; padding: 0 4px; line-height: 1; }
+    .del-btn:hover { color: #c0392b; }
+    .leg-cell { white-space: nowrap; }
+    .leg-from, .leg-to { font-weight: 500; color: #212529; }
+    .leg-arrow { color: #e74c3c; margin: 0 6px; font-weight: bold; }
+    .nm-cell { color: #555; white-space: nowrap; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+    .actions input { flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px; background: #fff; color: #212529; }
+    .btn-save  { padding: 6px 16px; background: #2980b9; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-save:hover  { background: #1f6fa8; }
+    .btn-clear { padding: 6px 12px; background: #fff; color: #6c757d; border: 1px solid #ced4da; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-clear:hover { background: #f0f2f4; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="panel">
+    <div id="status" class="status info">Click a mark to start your course.</div>
+    <div id="legs-container"></div>
+    <div id="actions" class="actions" style="display:none">
+      <button class="btn-clear" onclick="clearRoute()">🧹 Clear</button>
+      <input type="text" id="route-name" value="Race 1" placeholder="Route name"/>
+      <button class="btn-save" onclick="saveRoute()">💾 Save Route</button>
+    </div>
+  </div>
+
+  <script>
+    // ── Streamlit wire protocol ──────────────────────────────────────────────
+    function toStreamlit(value) {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value, dataType: "json" },
+        "*"
+      );
+    }
+    function setHeight() {
+      requestAnimationFrame(() => {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: document.body.scrollHeight + 16 },
+          "*"
+        );
+      });
+    }
+    window.parent.postMessage(
+      { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+      "*"
+    );
+
+    // ── Persistent state ────────────────────────────────────────────────────
+    const LS_ROUTE  = "pp_race_route";
+    const LS_CENTER = "pp_map_center";
+    const LS_ZOOM   = "pp_map_zoom";
+
+    let route    = JSON.parse(localStorage.getItem(LS_ROUTE)  || "[]");
+    let allMarks = [];
+    let markerLayers = {};
+    let routeLine    = null;
+
+    // ── Haversine ────────────────────────────────────────────────────────────
+    function haversineNm(lat1, lon1, lat2, lon2) {
+      const R = 6371, r = Math.PI / 180;
+      const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+      const a = Math.sin(dLat/2)**2 +
+                Math.cos(lat1*r) * Math.cos(lat2*r) * Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) / 1.852;
+    }
+
+    // ── Map setup ────────────────────────────────────────────────────────────
+    const savedCenter = JSON.parse(localStorage.getItem(LS_CENTER) || "null");
+    const savedZoom   = JSON.parse(localStorage.getItem(LS_ZOOM)   || "11");
+
+    const map = L.map("map", { preferCanvas: true })
+                 .setView(savedCenter || [-37.95, 144.92], savedZoom || 11);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { attribution: "© OpenStreetMap" }).addTo(map);
+    L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png",
+      { attribution: "© OpenSeaMap", opacity: 0.8 }).addTo(map);
+
+    map.on("moveend zoomend", () => {
+      const c = map.getCenter();
+      localStorage.setItem(LS_CENTER, JSON.stringify([c.lat, c.lng]));
+      localStorage.setItem(LS_ZOOM,   JSON.stringify(map.getZoom()));
+    });
+
+    // ── Marker style ─────────────────────────────────────────────────────────
+    const styleFor = sel => ({
+      radius: sel ? 9 : 7,
+      color: sel ? "#e74c3c" : "#2980b9",
+      fillColor: sel ? "#e74c3c" : "#2980b9",
+      fillOpacity: sel ? 1.0 : 0.8,
+      weight: 2
+    });
+
+    // ── Full render (pure JS, no server) ─────────────────────────────────────
+    function render() {
+      const sel = new Set(route);
+
+      // Marker colours
+      allMarks.forEach(m => {
+        const layer = markerLayers[m.name];
+        if (layer) layer.setStyle(styleFor(sel.has(m.name)));
+      });
+
+      // Route polyline
+      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+      if (route.length >= 2) {
+        const coords = route
+          .map(n => allMarks.find(m => m.name === n))
+          .filter(Boolean)
+          .map(m => [m.lat, m.lng]);
+        if (coords.length >= 2)
+          routeLine = L.polyline(coords, { color: "#e74c3c", weight: 3, opacity: 0.9 }).addTo(map);
+      }
+
+      // Status banner + legs table
+      const statusEl   = document.getElementById("status");
+      const container  = document.getElementById("legs-container");
+      const actionsEl  = document.getElementById("actions");
+
+      if (route.length === 0) {
+        statusEl.className = "status info";
+        statusEl.textContent = "Click a mark to start your course.";
+        container.innerHTML = "";
+        actionsEl.style.display = "none";
+        localStorage.removeItem(LS_ROUTE);
+        setHeight();
+        return;
+      }
+      if (route.length === 1) {
+        statusEl.className = "status info";
+        statusEl.textContent = `${route[0]} selected — click the next mark to create a leg.`;
+        container.innerHTML = "";
+        actionsEl.style.display = "none";
+        localStorage.setItem(LS_ROUTE, JSON.stringify(route));
+        setHeight();
+        return;
+      }
+
+      let total = 0, rows = "";
+      for (let i = 0; i < route.length - 1; i++) {
+        const a = allMarks.find(m => m.name === route[i]);
+        const b = allMarks.find(m => m.name === route[i + 1]);
+        if (!a || !b) continue;
+        const nm = haversineNm(a.lat, a.lng, b.lat, b.lng);
+        total += nm;
+        rows += `<tr>
+          <td class="leg-cell"><span class="leg-from">${a.name}</span><span class="leg-arrow">→</span><span class="leg-to">${b.name}</span></td>
+          <td class="nm-cell">${nm.toFixed(2)} NM</td>
+          <td><button class="del-btn" onclick="deleteLeg(${i})">✕</button></td>
+        </tr>`;
+      }
+
+      const legCount = route.length - 1;
+      statusEl.className = "status success";
+      statusEl.textContent = `${legCount} leg${legCount !== 1 ? "s" : ""} | Total: ${total.toFixed(2)} NM`;
+
+      container.innerHTML = `
+        <table>
+          <thead><tr><th>Leg</th><th>Distance</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+
+      actionsEl.style.display = "flex";
+      localStorage.setItem(LS_ROUTE, JSON.stringify(route));
+      setHeight();
+    }
+
+    // ── User actions ─────────────────────────────────────────────────────────
+    function addMark(name) {
+      route.push(name);
+      render();
+    }
+
+    function deleteLeg(i) {
+      route.splice(i + 1, 1);
+      render();
+    }
+
+    function clearRoute() {
+      route = [];
+      render();
+    }
+
+    function saveRoute() {
+      const name = document.getElementById("route-name").value.trim() || "Race 1";
+      toStreamlit({ action: "save", route, name, ts: Date.now() });
+    }
+
+    // ── Bootstrap from Streamlit render event ────────────────────────────────
+    window.addEventListener("message", function(evt) {
+      if (!evt.data || evt.data.type !== "streamlit:render") return;
+      allMarks = (evt.data.args || {}).marks || [];
+
+      // Replace all markers
+      Object.values(markerLayers).forEach(l => map.removeLayer(l));
+      markerLayers = {};
+
+      const sel = new Set(route);
+      allMarks.forEach(mark => {
+        const circle = L.circleMarker([mark.lat, mark.lng], styleFor(sel.has(mark.name))).addTo(map);
+        circle.bindTooltip(mark.name, { direction: "top", offset: [0, -6] });
+        circle.on("click", () => addMark(mark.name));
+        markerLayers[mark.name] = circle;
+      });
+
+      if (!savedCenter && allMarks.length > 0) {
+        const avgLat = allMarks.reduce((s, m) => s + m.lat, 0) / allMarks.length;
+        const avgLng = allMarks.reduce((s, m) => s + m.lng, 0) / allMarks.length;
+        map.setView([avgLat, avgLng], 11);
+      }
+
+      render();
+    });
+  </script>
+</body>
+</html>
