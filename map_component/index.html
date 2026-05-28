@@ -28,6 +28,8 @@
     .btn-save:hover  { background: #1f6fa8; }
     .btn-clear { padding: 6px 12px; background: #fff; color: #6c757d; border: 1px solid #ced4da; border-radius: 4px; cursor: pointer; font-size: 13px; }
     .btn-clear:hover { background: #f0f2f4; }
+    .btn-gpx  { padding: 6px 12px; background: #fff; color: #27ae60; border: 1px solid #27ae60; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-gpx:hover  { background: #eafaf1; }
   </style>
 </head>
 <body>
@@ -39,6 +41,7 @@
       <button class="btn-clear" onclick="clearRoute()">🧹 Clear</button>
       <input type="text" id="route-name" value="Race 1" placeholder="Route name"/>
       <button class="btn-save" onclick="saveRoute()">💾 Save Route</button>
+      <button class="btn-gpx" onclick="exportGPX()">📤 Export GPX</button>
     </div>
   </div>
 
@@ -202,6 +205,49 @@
     function saveRoute() {
       const name = document.getElementById("route-name").value.trim() || "Race 1";
       toStreamlit({ action: "save", route, name, ts: Date.now() });
+    }
+
+    function exportGPX() {
+      if (route.length < 2) return;
+      const name = document.getElementById("route-name").value.trim() || "Race 1";
+      const now  = new Date().toISOString();
+
+      const wpts = route.map(n => {
+        const m = allMarks.find(m => m.name === n);
+        if (!m) return "";
+        return `  <wpt lat="${m.lat}" lon="${m.lng}"><name>${escXml(m.name)}</name></wpt>`;
+      }).filter(Boolean).join("\n");
+
+      const rtepts = route.map(n => {
+        const m = allMarks.find(m => m.name === n);
+        if (!m) return "";
+        return `    <rtept lat="${m.lat}" lon="${m.lng}"><name>${escXml(m.name)}</name></rtept>`;
+      }).filter(Boolean).join("\n");
+
+      const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Port Phillip Race Mapper"
+     xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata><name>${escXml(name)}</name><time>${now}</time></metadata>
+${wpts}
+  <rte>
+    <name>${escXml(name)}</name>
+${rtepts}
+  </rte>
+</gpx>`;
+
+      const blob = new Blob([gpx], { type: "application/gpx+xml" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = name.replace(/[^a-z0-9_-]/gi, "_") + ".gpx";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function escXml(s) {
+      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     }
 
     // ── Bootstrap from Streamlit render event ────────────────────────────────
