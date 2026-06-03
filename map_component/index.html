@@ -30,12 +30,37 @@
     .btn-clear:hover { background: #f0f2f4; }
     .btn-gpx  { padding: 6px 12px; background: #fff; color: #27ae60; border: 1px solid #27ae60; border-radius: 4px; cursor: pointer; font-size: 13px; }
     .btn-gpx:hover  { background: #eafaf1; }
+
+    /* Movable marks */
+    .movable-section { margin: 6px 0 2px; padding: 8px 0 4px; border-top: 1px solid #e9ecef; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .movable-label { font-size: 13px; font-weight: 600; color: #7d5a00; white-space: nowrap; }
+    .btn-place { padding: 4px 11px; background: #f39c12; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .btn-place:hover { background: #d68910; }
+    .btn-place.active { background: #d35400; animation: pulse 1s infinite; }
+    .btn-clear-movable { padding: 4px 10px; background: #fff; color: #999; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .btn-clear-movable:hover { background: #fef9e7; color: #d68910; border-color: #f39c12; }
+    .movable-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+    .movable-badge { display: inline-flex; align-items: center; gap: 3px; background: #fef9e7; border: 1px solid #f39c12; border-radius: 12px; padding: 2px 7px 2px 8px; font-size: 12px; color: #7d5a00; font-weight: 600; }
+    .movable-badge .mbdel { background: none; border: none; color: #d68910; cursor: pointer; font-size: 12px; padding: 0; line-height: 1; }
+    .movable-badge .mbdel:hover { color: #c0392b; }
+    .place-banner { font-size: 12px; color: #d35400; font-style: italic; padding: 3px 0; width: 100%; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.7; } }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <div id="panel">
     <div id="status" class="status info">Click a mark to start your course.</div>
+
+    <!-- Movable marks toolbar -->
+    <div class="movable-section" id="movable-section">
+      <span class="movable-label">⬤ Laid Marks</span>
+      <button class="btn-place" id="btn-place" onclick="togglePlaceMode()">+ Add</button>
+      <button class="btn-clear-movable" onclick="clearMovable()" title="Remove all laid marks">Clear all</button>
+      <div class="movable-badges" id="movable-badges"></div>
+      <div class="place-banner" id="place-banner" style="display:none">Click anywhere on the map to place a laid mark.</div>
+    </div>
+
     <div id="legs-container"></div>
     <div id="actions" class="actions" style="display:none">
       <button class="btn-clear" onclick="clearRoute()">🧹 Clear</button>
@@ -67,14 +92,25 @@
     );
 
     // ── Persistent state ────────────────────────────────────────────────────
-    const LS_ROUTE  = "pp_race_route";
-    const LS_CENTER = "pp_map_center";
-    const LS_ZOOM   = "pp_map_zoom";
+    const LS_ROUTE    = "pp_race_route";
+    const LS_CENTER   = "pp_map_center";
+    const LS_ZOOM     = "pp_map_zoom";
+    const LS_MOVABLE  = "pp_movable_marks";
 
-    let route    = JSON.parse(localStorage.getItem(LS_ROUTE)  || "[]");
-    let allMarks = [];
-    let markerLayers = {};
-    let routeLine    = null;
+    let route         = JSON.parse(localStorage.getItem(LS_ROUTE)   || "[]");
+    let allMarks      = [];          // fixed marks from CSV
+    let markerLayers  = {};          // fixed mark layers
+    let routeLine     = null;
+
+    // Movable / laid marks
+    let movableMarks  = JSON.parse(localStorage.getItem(LS_MOVABLE) || "[]");
+    let movableLayers = {};
+    let movableCounter = 1;
+    let placeMode     = false;
+
+    if (movableMarks.length > 0) {
+      movableCounter = Math.max(...movableMarks.map(m => parseInt(m.name.replace(/\D/g,"")) || 0)) + 1;
+    }
 
     // ── Haversine ────────────────────────────────────────────────────────────
     function haversineNm(lat1, lon1, lat2, lon2) {
@@ -89,7 +125,7 @@
     const savedCenter = JSON.parse(localStorage.getItem(LS_CENTER) || "null");
     const savedZoom   = JSON.parse(localStorage.getItem(LS_ZOOM)   || "11");
 
-    const map = L.map("map", { preferCanvas: true })
+    const map = L.map("map", { preferCanvas: false })
                  .setView(savedCenter || [-37.95, 144.92], savedZoom || 11);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -103,7 +139,20 @@
       localStorage.setItem(LS_ZOOM,   JSON.stringify(map.getZoom()));
     });
 
-    // ── Marker style ─────────────────────────────────────────────────────────
+    // Place mode: click map to drop a movable mark
+    map.on("click", function(e) {
+      if (!placeMode) return;
+      createMovableMarker("M" + movableCounter++, e.latlng.lat, e.latlng.lng);
+      saveMovable();
+      placeMode = false;
+      map.getContainer().style.cursor = "";
+      document.getElementById("btn-place").classList.remove("active");
+      document.getElementById("place-banner").style.display = "none";
+      renderMovableBadges();
+      render();
+    });
+
+    // ── Fixed mark style ─────────────────────────────────────────────────────
     const styleFor = sel => ({
       radius: sel ? 9 : 7,
       color: sel ? "#e74c3c" : "#2980b9",
@@ -112,21 +161,131 @@
       weight: 2
     });
 
-    // ── Full render (pure JS, no server) ─────────────────────────────────────
+    // ── Movable mark icon (orange, draggable L.marker) ────────────────────────
+    function movableIcon(selected) {
+      const bg     = selected ? "#d35400" : "#f39c12";
+      const border = selected ? "#c0392b" : "#d68910";
+      const size   = selected ? 18 : 14;
+      const half   = size / 2;
+      return L.divIcon({
+        className: "",
+        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${bg};border:2px solid ${border};opacity:0.95;box-shadow:0 1px 4px rgba(0,0,0,0.35);"></div>`,
+        iconSize:   [size, size],
+        iconAnchor: [half, half],
+        tooltipAnchor: [half, -half]
+      });
+    }
+
+    function createMovableMarker(name, lat, lng) {
+      // Don't recreate if already exists
+      if (movableLayers[name]) return;
+
+      // Ensure the data record exists
+      if (!movableMarks.find(m => m.name === name)) {
+        movableMarks.push({ name, lat, lng });
+      }
+
+      const sel = route.includes(name);
+      const marker = L.marker([lat, lng], {
+        icon: movableIcon(sel),
+        draggable: true,
+        zIndexOffset: 500
+      }).addTo(map);
+
+      marker.bindTooltip(name, { direction: "top", offset: [0, -8], permanent: false });
+
+      marker.on("click", () => addMark(name));
+      marker.on("dragend", function() {
+        const pos = marker.getLatLng();
+        const rec = movableMarks.find(m => m.name === name);
+        if (rec) { rec.lat = pos.lat; rec.lng = pos.lng; }
+        saveMovable();
+        render();
+      });
+
+      movableLayers[name] = marker;
+    }
+
+    function saveMovable() {
+      localStorage.setItem(LS_MOVABLE, JSON.stringify(
+        movableMarks.map(({ name, lat, lng }) => ({ name, lat, lng }))
+      ));
+    }
+
+    function removeMovableMark(name) {
+      const layer = movableLayers[name];
+      if (layer) { map.removeLayer(layer); delete movableLayers[name]; }
+      movableMarks = movableMarks.filter(m => m.name !== name);
+      route = route.filter(r => r !== name);
+      saveMovable();
+      renderMovableBadges();
+      render();
+    }
+
+    function clearMovable() {
+      Object.values(movableLayers).forEach(l => map.removeLayer(l));
+      movableLayers = {};
+      movableMarks = [];
+      route = route.filter(r => !r.startsWith("M") || allMarks.find(m => m.name === r));
+      movableCounter = 1;
+      saveMovable();
+      renderMovableBadges();
+      render();
+    }
+
+    function togglePlaceMode() {
+      placeMode = !placeMode;
+      const btn = document.getElementById("btn-place");
+      const banner = document.getElementById("place-banner");
+      if (placeMode) {
+        btn.classList.add("active");
+        btn.textContent = "✕ Cancel";
+        banner.style.display = "block";
+        map.getContainer().style.cursor = "crosshair";
+      } else {
+        btn.classList.remove("active");
+        btn.textContent = "+ Add";
+        banner.style.display = "none";
+        map.getContainer().style.cursor = "";
+      }
+      setHeight();
+    }
+
+    function renderMovableBadges() {
+      const container = document.getElementById("movable-badges");
+      container.innerHTML = movableMarks.map(m =>
+        `<span class="movable-badge">${m.name}<button class="mbdel" onclick="removeMovableMark('${m.name}')" title="Remove ${m.name}">✕</button></span>`
+      ).join("");
+      setHeight();
+    }
+
+    // ── Combine fixed + movable for routing ───────────────────────────────────
+    function getAllMarks() {
+      return [...allMarks, ...movableMarks.map(({ name, lat, lng }) => ({ name, lat, lng }))];
+    }
+
+    // ── Full render ───────────────────────────────────────────────────────────
     function render() {
       const sel = new Set(route);
 
-      // Marker colours
+      // Fixed mark colours
       allMarks.forEach(m => {
         const layer = markerLayers[m.name];
         if (layer) layer.setStyle(styleFor(sel.has(m.name)));
       });
 
+      // Movable mark icons
+      movableMarks.forEach(m => {
+        const layer = movableLayers[m.name];
+        if (layer) layer.setIcon(movableIcon(sel.has(m.name)));
+      });
+
       // Route polyline
       if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
       if (route.length >= 2) {
+        const marks = getAllMarks();
         const coords = route
-          .map(n => allMarks.find(m => m.name === n))
+          .map(n => marks.find(m => m.name === n))
           .filter(Boolean)
           .map(m => [m.lat, m.lng]);
         if (coords.length >= 2)
@@ -134,9 +293,9 @@
       }
 
       // Status banner + legs table
-      const statusEl   = document.getElementById("status");
-      const container  = document.getElementById("legs-container");
-      const actionsEl  = document.getElementById("actions");
+      const statusEl  = document.getElementById("status");
+      const container = document.getElementById("legs-container");
+      const actionsEl = document.getElementById("actions");
 
       if (route.length === 0) {
         statusEl.className = "status info";
@@ -157,15 +316,22 @@
         return;
       }
 
+      const marks = getAllMarks();
       let total = 0, rows = "";
       for (let i = 0; i < route.length - 1; i++) {
-        const a = allMarks.find(m => m.name === route[i]);
-        const b = allMarks.find(m => m.name === route[i + 1]);
+        const a = marks.find(m => m.name === route[i]);
+        const b = marks.find(m => m.name === route[i + 1]);
         if (!a || !b) continue;
         const nm = haversineNm(a.lat, a.lng, b.lat, b.lng);
         total += nm;
+        const aLabel = movableMarks.find(m => m.name === a.name)
+          ? `<span style="color:#d68910;font-weight:600">${a.name}</span>`
+          : `<span class="leg-from">${a.name}</span>`;
+        const bLabel = movableMarks.find(m => m.name === b.name)
+          ? `<span style="color:#d68910;font-weight:600">${b.name}</span>`
+          : `<span class="leg-to">${b.name}</span>`;
         rows += `<tr>
-          <td class="leg-cell"><span class="leg-from">${a.name}</span><span class="leg-arrow">→</span><span class="leg-to">${b.name}</span></td>
+          <td class="leg-cell">${aLabel}<span class="leg-arrow">→</span>${bLabel}</td>
           <td class="nm-cell">${nm.toFixed(2)} NM</td>
           <td><button class="del-btn" onclick="deleteLeg(${i})">✕</button></td>
         </tr>`;
@@ -209,17 +375,18 @@
 
     function exportGPX() {
       if (route.length < 2) return;
-      const name = document.getElementById("route-name").value.trim() || "Race 1";
-      const now  = new Date().toISOString();
+      const name  = document.getElementById("route-name").value.trim() || "Race 1";
+      const now   = new Date().toISOString();
+      const marks = getAllMarks();
 
       const wpts = route.map(n => {
-        const m = allMarks.find(m => m.name === n);
+        const m = marks.find(m => m.name === n);
         if (!m) return "";
         return `  <wpt lat="${m.lat}" lon="${m.lng}"><name>${escXml(m.name)}</name></wpt>`;
       }).filter(Boolean).join("\n");
 
       const rtepts = route.map(n => {
-        const m = allMarks.find(m => m.name === n);
+        const m = marks.find(m => m.name === n);
         if (!m) return "";
         return `    <rtept lat="${m.lat}" lon="${m.lng}"><name>${escXml(m.name)}</name></rtept>`;
       }).filter(Boolean).join("\n");
@@ -255,7 +422,7 @@ ${rtepts}
       if (!evt.data || evt.data.type !== "streamlit:render") return;
       allMarks = (evt.data.args || {}).marks || [];
 
-      // Replace all markers
+      // Rebuild fixed markers
       Object.values(markerLayers).forEach(l => map.removeLayer(l));
       markerLayers = {};
 
@@ -267,12 +434,16 @@ ${rtepts}
         markerLayers[mark.name] = circle;
       });
 
+      // Restore movable markers from localStorage
+      movableMarks.forEach(m => createMovableMarker(m.name, m.lat, m.lng));
+
       if (!savedCenter && allMarks.length > 0) {
         const avgLat = allMarks.reduce((s, m) => s + m.lat, 0) / allMarks.length;
         const avgLng = allMarks.reduce((s, m) => s + m.lng, 0) / allMarks.length;
         map.setView([avgLat, avgLng], 11);
       }
 
+      renderMovableBadges();
       render();
     });
   </script>
