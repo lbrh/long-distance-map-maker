@@ -31,6 +31,23 @@
     .btn-gpx  { padding: 6px 12px; background: #fff; color: #27ae60; border: 1px solid #27ae60; border-radius: 4px; cursor: pointer; font-size: 13px; }
     .btn-gpx:hover  { background: #eafaf1; }
 
+    /* Saved maps panel */
+    .saved-section { margin-top: 10px; border-top: 1px solid #e9ecef; padding-top: 8px; }
+    .saved-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .saved-title { font-size: 13px; font-weight: 600; color: #333; }
+    .saved-toggle { background: none; border: none; cursor: pointer; font-size: 12px; color: #2980b9; padding: 0; }
+    .saved-toggle:hover { text-decoration: underline; }
+    .saved-list { display: flex; flex-direction: column; gap: 4px; }
+    .saved-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid #e9ecef; border-radius: 5px; background: #fafbfc; }
+    .saved-item:hover { background: #f0f4f8; }
+    .saved-item-name { flex: 1; font-size: 13px; font-weight: 500; color: #212529; }
+    .saved-item-meta { font-size: 11px; color: #888; white-space: nowrap; }
+    .btn-load { padding: 3px 10px; background: #2980b9; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .btn-load:hover { background: #1f6fa8; }
+    .btn-del-saved { background: none; border: none; color: #ccc; cursor: pointer; font-size: 14px; padding: 0 2px; }
+    .btn-del-saved:hover { color: #e74c3c; }
+    .saved-empty { font-size: 12px; color: #aaa; font-style: italic; padding: 4px 0; }
+
     /* Movable marks */
     .movable-section { margin: 6px 0 2px; padding: 8px 0 4px; border-top: 1px solid #e9ecef; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
     .movable-label { font-size: 13px; font-weight: 600; color: #7d5a00; white-space: nowrap; }
@@ -68,6 +85,16 @@
       <button class="btn-save" onclick="saveRoute()">💾 Save Route</button>
       <button class="btn-gpx" onclick="exportGPX()">📤 Export GPX</button>
     </div>
+
+    <div class="saved-section">
+      <div class="saved-header">
+        <span class="saved-title">Saved Maps</span>
+        <button class="saved-toggle" onclick="toggleSavedPanel()" id="saved-toggle-btn">▲ hide</button>
+      </div>
+      <div id="saved-panel">
+        <div class="saved-list" id="saved-list"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -96,6 +123,7 @@
     const LS_CENTER   = "pp_map_center";
     const LS_ZOOM     = "pp_map_zoom";
     const LS_MOVABLE  = "pp_movable_marks";
+    const LS_SAVED    = "pp_saved_maps";
 
     let route         = JSON.parse(localStorage.getItem(LS_ROUTE)   || "[]");
     let allMarks      = [];          // fixed marks from CSV
@@ -368,9 +396,94 @@
       render();
     }
 
+    // ── Saved maps ───────────────────────────────────────────────────────────
+    let savedPanelOpen = true;
+
+    function toggleSavedPanel() {
+      savedPanelOpen = !savedPanelOpen;
+      document.getElementById("saved-panel").style.display = savedPanelOpen ? "block" : "none";
+      document.getElementById("saved-toggle-btn").textContent = savedPanelOpen ? "▲ hide" : "▼ show";
+      if (savedPanelOpen) renderSavedMaps();
+      setHeight();
+    }
+
+    function getSavedMaps() {
+      return JSON.parse(localStorage.getItem(LS_SAVED) || "[]");
+    }
+
+    function renderSavedMaps() {
+      const maps = getSavedMaps();
+      const list = document.getElementById("saved-list");
+      if (maps.length === 0) {
+        list.innerHTML = '<div class="saved-empty">No saved maps yet.</div>';
+        setHeight();
+        return;
+      }
+      list.innerHTML = maps.map((m, i) => {
+        const date = new Date(m.ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        const legCount = Math.max(0, m.route.length - 1);
+        return `<div class="saved-item">
+          <span class="saved-item-name">${escXml(m.name)}</span>
+          <span class="saved-item-meta">${legCount} leg${legCount !== 1 ? "s" : ""} &middot; ${date}</span>
+          <button class="btn-load" onclick="loadMap(${i})">Load</button>
+          <button class="btn-del-saved" onclick="deleteSavedMap(${i})" title="Delete">✕</button>
+        </div>`;
+      }).join("");
+      setHeight();
+    }
+
     function saveRoute() {
       const name = document.getElementById("route-name").value.trim() || "Race 1";
+      const maps = getSavedMaps();
+      maps.unshift({ name, ts: Date.now(), route: [...route], movableMarks: movableMarks.map(m => ({...m})) });
+      localStorage.setItem(LS_SAVED, JSON.stringify(maps));
       toStreamlit({ action: "save", route, name, ts: Date.now() });
+      if (savedPanelOpen) renderSavedMaps();
+      // Flash the saved section open if it was closed
+      if (!savedPanelOpen) {
+        savedPanelOpen = true;
+        document.getElementById("saved-panel").style.display = "block";
+        document.getElementById("saved-toggle-btn").textContent = "▲ hide";
+        renderSavedMaps();
+      }
+    }
+
+    function loadMap(index) {
+      const maps = getSavedMaps();
+      const saved = maps[index];
+      if (!saved) return;
+
+      // Restore movable marks: add any that don't exist yet
+      saved.movableMarks.forEach(m => {
+        if (!movableMarks.find(x => x.name === m.name)) {
+          movableMarks.push({ name: m.name, lat: m.lat, lng: m.lng });
+        } else {
+          const rec = movableMarks.find(x => x.name === m.name);
+          rec.lat = m.lat; rec.lng = m.lng;
+        }
+        if (movableLayers[m.name]) {
+          movableLayers[m.name].setLatLng([m.lat, m.lng]);
+        } else {
+          createMovableMarker(m.name, m.lat, m.lng);
+        }
+      });
+      // Update counter so new marks don't collide
+      if (movableMarks.length > 0) {
+        movableCounter = Math.max(...movableMarks.map(m => parseInt(m.name.replace(/\D/g,"")) || 0)) + 1;
+      }
+      saveMovable();
+      renderMovableBadges();
+
+      route = [...saved.route];
+      document.getElementById("route-name").value = saved.name;
+      render();
+    }
+
+    function deleteSavedMap(index) {
+      const maps = getSavedMaps();
+      maps.splice(index, 1);
+      localStorage.setItem(LS_SAVED, JSON.stringify(maps));
+      renderSavedMaps();
     }
 
     function exportGPX() {
@@ -444,6 +557,7 @@ ${rtepts}
       }
 
       renderMovableBadges();
+      renderSavedMaps();
       render();
     });
   </script>
