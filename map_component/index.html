@@ -30,6 +30,35 @@
     .btn-clear:hover { background: #f0f2f4; }
     .btn-gpx  { padding: 6px 12px; background: #fff; color: #27ae60; border: 1px solid #27ae60; border-radius: 4px; cursor: pointer; font-size: 13px; }
     .btn-gpx:hover  { background: #eafaf1; }
+    .btn-undo { padding: 6px 12px; background: #fff; color: #6c757d; border: 1px solid #ced4da; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-undo:hover { background: #f0f2f4; }
+    .btn-card { padding: 6px 12px; background: #fff; color: #6f42c1; border: 1px solid #6f42c1; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-card:hover { background: #f3eeff; }
+    .btn-update { padding: 3px 10px; background: #fff; color: #e67e22; border: 1px solid #e67e22; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .btn-update:hover { background: #fef5ec; }
+    .rename-input { font-size: 13px; font-weight: 500; border: 1px solid #2980b9; border-radius: 3px; padding: 1px 5px; width: 120px; outline: none; }
+    .mb-rename-input { font-size: 12px; font-weight: 600; border: 1px solid #f39c12; border-radius: 10px; padding: 1px 6px; width: 70px; outline: none; color: #7d5a00; }
+
+    /* Course card modal */
+    .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:9999; align-items:center; justify-content:center; }
+    .modal-overlay.open { display:flex; }
+    .modal-box { background:#fff; border-radius:8px; padding:20px 24px; max-width:520px; width:92%; max-height:82vh; overflow-y:auto; position:relative; box-shadow:0 8px 32px rgba(0,0,0,0.18); }
+    .modal-title { font-size:16px; font-weight:700; color:#212529; margin-bottom:12px; }
+    .modal-close { position:absolute; top:12px; right:14px; background:none; border:none; font-size:20px; cursor:pointer; color:#aaa; line-height:1; }
+    .modal-close:hover { color:#333; }
+    .card-table { width:100%; border-collapse:collapse; font-size:13px; margin-bottom:12px; }
+    .card-table th { background:#f0f2f4; padding:6px 10px; text-align:left; border-bottom:2px solid #dee2e6; font-weight:600; color:#333; }
+    .card-table td { padding:5px 10px; border-bottom:1px solid #e9ecef; }
+    .card-total { font-size:13px; font-weight:600; color:#333; margin-bottom:14px; }
+    .modal-actions { display:flex; gap:8px; }
+    .btn-print { padding:6px 16px; background:#6f42c1; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:13px; }
+    .btn-print:hover { background:#5a32a3; }
+    @media print {
+      body > *:not(#course-card-modal) { display:none !important; }
+      .modal-overlay { position:static; background:none; display:block !important; }
+      .modal-box { box-shadow:none; max-height:none; padding:0; }
+      .modal-close, .modal-actions { display:none !important; }
+    }
 
     /* Saved maps panel */
     .saved-section { margin-top: 10px; border-top: 1px solid #e9ecef; padding-top: 8px; }
@@ -80,10 +109,12 @@
 
     <div id="legs-container"></div>
     <div id="actions" class="actions" style="display:none">
+      <button class="btn-undo" onclick="undoMark()" title="Remove last mark">↩ Undo</button>
       <button class="btn-clear" onclick="clearRoute()">🧹 Clear</button>
       <input type="text" id="route-name" value="Race 1" placeholder="Route name"/>
-      <button class="btn-save" onclick="saveRoute()">💾 Save Route</button>
-      <button class="btn-gpx" onclick="exportGPX()">📤 Export GPX</button>
+      <button class="btn-save" onclick="saveRoute()">💾 Save</button>
+      <button class="btn-card" onclick="showCourseCard()">📋 Course Card</button>
+      <button class="btn-gpx" onclick="exportGPX()">📤 GPX</button>
     </div>
 
     <div class="saved-section">
@@ -93,6 +124,23 @@
       </div>
       <div id="saved-panel">
         <div class="saved-list" id="saved-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Course card modal -->
+  <div id="course-card-modal" class="modal-overlay">
+    <div class="modal-box" id="printable-card">
+      <button class="modal-close" onclick="hideCourseCard()">✕</button>
+      <div class="modal-title" id="card-title"></div>
+      <table class="card-table">
+        <thead><tr><th>#</th><th>Leg</th><th>Bearing</th><th>Distance</th></tr></thead>
+        <tbody id="card-tbody"></tbody>
+      </table>
+      <div class="card-total" id="card-total"></div>
+      <div class="modal-actions">
+        <button class="btn-print" onclick="window.print()">🖨 Print</button>
+        <button class="btn-clear" onclick="hideCourseCard()">Close</button>
       </div>
     </div>
   </div>
@@ -140,7 +188,15 @@
       movableCounter = Math.max(...movableMarks.map(m => parseInt(m.name.replace(/\D/g,"")) || 0)) + 1;
     }
 
-    // ── Haversine ────────────────────────────────────────────────────────────
+    // ── Haversine + bearing ──────────────────────────────────────────────────
+    function bearingDeg(lat1, lon1, lat2, lon2) {
+      const r = Math.PI / 180;
+      const dLon = (lon2 - lon1) * r;
+      const y = Math.sin(dLon) * Math.cos(lat2 * r);
+      const x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos(dLon);
+      return ((Math.atan2(y, x) / r) + 360) % 360;
+    }
+
     function haversineNm(lat1, lon1, lat2, lon2) {
       const R = 6371, r = Math.PI / 180;
       const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
@@ -282,9 +338,47 @@
     function renderMovableBadges() {
       const container = document.getElementById("movable-badges");
       container.innerHTML = movableMarks.map(m =>
-        `<span class="movable-badge">${m.name}<button class="mbdel" onclick="removeMovableMark('${m.name}')" title="Remove ${m.name}">✕</button></span>`
+        `<span class="movable-badge"><span class="mb-name" onclick="startRenameMovable('${m.name}')" title="Click to rename" style="cursor:pointer">${escXml(m.name)}</span><button class="mbdel" onclick="removeMovableMark('${m.name}')" title="Remove ${m.name}">✕</button></span>`
       ).join("");
       setHeight();
+    }
+
+    function startRenameMovable(oldName) {
+      const badges = document.querySelectorAll(".movable-badge");
+      for (const badge of badges) {
+        const nameEl = badge.querySelector(".mb-name");
+        if (!nameEl || nameEl.textContent !== oldName) continue;
+        const input = document.createElement("input");
+        input.className = "mb-rename-input";
+        input.value = oldName;
+        badge.replaceChild(input, nameEl);
+        input.focus();
+        input.select();
+        const commit = () => confirmRenameMovable(oldName, input.value.trim());
+        input.addEventListener("blur", commit);
+        input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); else if (e.key === "Escape") renderMovableBadges(); });
+        break;
+      }
+    }
+
+    function confirmRenameMovable(oldName, newName) {
+      if (!newName || newName === oldName) { renderMovableBadges(); return; }
+      if (movableMarks.find(m => m.name === newName)) { alert(`"${newName}" already exists.`); renderMovableBadges(); return; }
+      const rec = movableMarks.find(m => m.name === oldName);
+      if (rec) rec.name = newName;
+      const layer = movableLayers[oldName];
+      if (layer) {
+        movableLayers[newName] = layer;
+        delete movableLayers[oldName];
+        layer.unbindTooltip();
+        layer.bindTooltip(newName, { direction: "top", offset: [0, -8], permanent: false });
+        layer.off("click");
+        layer.on("click", () => addMark(newName));
+      }
+      route = route.map(r => r === oldName ? newName : r);
+      saveMovable();
+      renderMovableBadges();
+      render();
     }
 
     // ── Combine fixed + movable for routing ───────────────────────────────────
@@ -396,6 +490,43 @@
       render();
     }
 
+    function undoMark() {
+      if (route.length === 0) return;
+      route.pop();
+      render();
+    }
+
+    function showCourseCard() {
+      if (route.length < 2) return;
+      const name  = document.getElementById("route-name").value.trim() || "Race 1";
+      const marks = getAllMarks();
+      let total = 0, rows = "";
+      for (let i = 0; i < route.length - 1; i++) {
+        const a = marks.find(m => m.name === route[i]);
+        const b = marks.find(m => m.name === route[i + 1]);
+        if (!a || !b) continue;
+        const nm  = haversineNm(a.lat, a.lng, b.lat, b.lng);
+        const brg = bearingDeg(a.lat, a.lng, b.lat, b.lng);
+        total += nm;
+        rows += `<tr>
+          <td>${i + 1}</td>
+          <td>${escXml(a.name)} → ${escXml(b.name)}</td>
+          <td>${brg.toFixed(1)}°T</td>
+          <td>${nm.toFixed(2)} NM</td>
+        </tr>`;
+      }
+      document.getElementById("card-title").textContent = name;
+      document.getElementById("card-tbody").innerHTML = rows;
+      document.getElementById("card-total").textContent = `Total: ${total.toFixed(2)} NM over ${route.length - 1} leg${route.length - 1 !== 1 ? "s" : ""}`;
+      document.getElementById("course-card-modal").classList.add("open");
+      setHeight();
+    }
+
+    function hideCourseCard() {
+      document.getElementById("course-card-modal").classList.remove("open");
+      setHeight();
+    }
+
     // ── Saved maps ───────────────────────────────────────────────────────────
     let savedPanelOpen = true;
 
@@ -422,10 +553,12 @@
       list.innerHTML = maps.map((m, i) => {
         const date = new Date(m.ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
         const legCount = Math.max(0, m.route.length - 1);
-        return `<div class="saved-item">
-          <span class="saved-item-name">${escXml(m.name)}</span>
+        return `<div class="saved-item" id="saved-item-${i}">
+          <span class="saved-item-name" id="saved-name-${i}" onclick="startRenameSaved(${i})" title="Click to rename" style="cursor:pointer">${escXml(m.name)}</span>
           <span class="saved-item-meta">${legCount} leg${legCount !== 1 ? "s" : ""} &middot; ${date}</span>
           <button class="btn-load" onclick="loadMap(${i})">Load</button>
+          <button class="btn-update" onclick="overwriteSavedMap(${i})" title="Overwrite with current route">Update</button>
+          <button class="btn-gpx" style="font-size:12px;padding:3px 10px" onclick="exportSavedMap(${i})">GPX</button>
           <button class="btn-del-saved" onclick="deleteSavedMap(${i})" title="Delete">✕</button>
         </div>`;
       }).join("");
@@ -435,17 +568,56 @@
     function saveRoute() {
       const name = document.getElementById("route-name").value.trim() || "Race 1";
       const maps = getSavedMaps();
-      maps.unshift({ name, ts: Date.now(), route: [...route], movableMarks: movableMarks.map(m => ({...m})) });
+      const existing = maps.findIndex(m => m.name === name);
+      if (existing !== -1) {
+        if (!confirm(`"${name}" already exists. Overwrite it?`)) return;
+        maps[existing] = { name, ts: Date.now(), route: [...route], movableMarks: movableMarks.map(m => ({...m})) };
+      } else {
+        maps.unshift({ name, ts: Date.now(), route: [...route], movableMarks: movableMarks.map(m => ({...m})) });
+      }
       localStorage.setItem(LS_SAVED, JSON.stringify(maps));
       toStreamlit({ action: "save", route, name, ts: Date.now() });
-      if (savedPanelOpen) renderSavedMaps();
-      // Flash the saved section open if it was closed
       if (!savedPanelOpen) {
         savedPanelOpen = true;
         document.getElementById("saved-panel").style.display = "block";
         document.getElementById("saved-toggle-btn").textContent = "▲ hide";
-        renderSavedMaps();
       }
+      renderSavedMaps();
+    }
+
+    function overwriteSavedMap(index) {
+      if (route.length < 2) { alert("No active route to save."); return; }
+      const maps = getSavedMaps();
+      const saved = maps[index];
+      if (!saved) return;
+      if (!confirm(`Overwrite "${saved.name}" with the current route?`)) return;
+      maps[index] = { name: saved.name, ts: Date.now(), route: [...route], movableMarks: movableMarks.map(m => ({...m})) };
+      localStorage.setItem(LS_SAVED, JSON.stringify(maps));
+      renderSavedMaps();
+    }
+
+    function startRenameSaved(index) {
+      const nameEl = document.getElementById(`saved-name-${index}`);
+      if (!nameEl) return;
+      const maps = getSavedMaps();
+      const input = document.createElement("input");
+      input.className = "rename-input";
+      input.value = maps[index].name;
+      nameEl.replaceWith(input);
+      input.focus();
+      input.select();
+      const commit = () => confirmRenameSaved(index, input.value.trim());
+      input.addEventListener("blur", commit);
+      input.addEventListener("keydown", e => { if (e.key === "Enter") input.blur(); else if (e.key === "Escape") renderSavedMaps(); });
+    }
+
+    function confirmRenameSaved(index, newName) {
+      if (!newName) { renderSavedMaps(); return; }
+      const maps = getSavedMaps();
+      if (!maps[index]) return;
+      maps[index].name = newName;
+      localStorage.setItem(LS_SAVED, JSON.stringify(maps));
+      renderSavedMaps();
     }
 
     function loadMap(index) {
@@ -484,6 +656,43 @@
       maps.splice(index, 1);
       localStorage.setItem(LS_SAVED, JSON.stringify(maps));
       renderSavedMaps();
+    }
+
+    function exportSavedMap(index) {
+      const maps = getSavedMaps();
+      const saved = maps[index];
+      if (!saved || saved.route.length < 2) return;
+      const now = new Date().toISOString();
+      const allFixed = [...allMarks, ...(saved.movableMarks || [])];
+      const wpts = saved.route.map(n => {
+        const m = allFixed.find(m => m.name === n);
+        if (!m) return "";
+        return `  <wpt lat="${m.lat}" lon="${m.lng}"><name>${escXml(m.name)}</name></wpt>`;
+      }).filter(Boolean).join("\n");
+      const rtepts = saved.route.map(n => {
+        const m = allFixed.find(m => m.name === n);
+        if (!m) return "";
+        return `    <rtept lat="${m.lat}" lon="${m.lng}"><name>${escXml(m.name)}</name></rtept>`;
+      }).filter(Boolean).join("\n");
+      const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Port Phillip Race Mapper"
+     xmlns="http://www.topografix.com/GPX/1/1"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata><name>${escXml(saved.name)}</name><time>${now}</time></metadata>
+${wpts}
+  <rte>
+    <name>${escXml(saved.name)}</name>
+${rtepts}
+  </rte>
+</gpx>`;
+      const blob = new Blob([gpx], { type: "application/gpx+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = saved.name.replace(/[^a-z0-9_-]/gi, "_") + ".gpx";
+      a.click();
+      URL.revokeObjectURL(url);
     }
 
     function exportGPX() {
