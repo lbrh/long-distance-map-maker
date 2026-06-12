@@ -105,6 +105,7 @@
       <button class="btn-clear-movable" onclick="clearMovable()" title="Remove all laid marks">Clear all</button>
       <div class="movable-badges" id="movable-badges"></div>
       <div class="place-banner" id="place-banner" style="display:none">Click anywhere on the map to place a laid mark.</div>
+      <div class="place-banner" id="rename-hint" style="display:none">Click a mark name to rename it.</div>
     </div>
 
     <div id="legs-container"></div>
@@ -230,7 +231,9 @@
       saveMovable();
       placeMode = false;
       map.getContainer().style.cursor = "";
-      document.getElementById("btn-place").classList.remove("active");
+      const btn = document.getElementById("btn-place");
+      btn.classList.remove("active");
+      btn.textContent = "+ Add";
       document.getElementById("place-banner").style.display = "none";
       renderMovableBadges();
       render();
@@ -340,6 +343,7 @@
       container.innerHTML = movableMarks.map(m =>
         `<span class="movable-badge"><span class="mb-name" onclick="startRenameMovable('${m.name}')" title="Click to rename" style="cursor:pointer">${escXml(m.name)}</span><button class="mbdel" onclick="removeMovableMark('${m.name}')" title="Remove ${m.name}">✕</button></span>`
       ).join("");
+      document.getElementById("rename-hint").style.display = movableMarks.length > 0 ? "block" : "none";
       setHeight();
     }
 
@@ -511,7 +515,7 @@
         rows += `<tr>
           <td>${i + 1}</td>
           <td>${escXml(a.name)} → ${escXml(b.name)}</td>
-          <td>${brg.toFixed(1)}°T</td>
+          <td>${brg.toFixed(1)}°M</td>
           <td>${nm.toFixed(2)} NM</td>
         </tr>`;
       }
